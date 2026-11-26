@@ -182,7 +182,7 @@ class Collection
     public function drop(array $options = []): array|object
     {
         $options = $this->writeOptions($options, true);
-        return (new DropCollection($this->databaseName, $this->collectionName, $options))->execute($this->primary($options));
+        return Functions::dropCollection($this->manager, $this->databaseName, $this->collectionName, $options);
     }
 
     public function dropIndex(string|IndexInfo $indexName, array $options = []): array|object

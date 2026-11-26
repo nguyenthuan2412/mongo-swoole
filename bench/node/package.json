@@ -1,0 +1,1 @@
+{ "name": "swmongo-bench-node", "private": true, "type": "module", "dependencies": { "mongodb": "^6" } }

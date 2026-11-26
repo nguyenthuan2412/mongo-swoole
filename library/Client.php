@@ -48,6 +48,9 @@ class Client
         $this->uri = $uri ?? self::DEFAULT_URI;
         $this->typeMap = $driverOptions['typeMap'];
         unset($driverOptions['typeMap'], $driverOptions['builderEncoder'], $driverOptions['codec']);
+        if (isset($driverOptions['autoEncryption']['keyVaultClient']) && $driverOptions['autoEncryption']['keyVaultClient'] instanceof self) {
+            $driverOptions['autoEncryption']['keyVaultClient'] = $driverOptions['autoEncryption']['keyVaultClient']->getManager();
+        }
         $this->manager = new Manager($this->uri, $uriOptions, $driverOptions);
         $this->readConcern = $this->manager->getReadConcern();
         $this->readPreference = $this->manager->getReadPreference();
@@ -91,9 +94,19 @@ class Client
         return $server->executeBulkWriteCommand($bulk->bulkWriteCommand, array_intersect_key($options, ['session' => 1, 'writeConcern' => 1, 'timeoutMS' => 1]));
     }
 
-    public function createClientEncryption(array $options): never
+    public function createClientEncryption(array $options): \SwooleMongo\Driver\ClientEncryption
     {
-        throw UnsupportedException::clientEncryptionNotSupported();
+        if (!class_exists(\SwooleMongo\Driver\ClientEncryption::class, false)) {
+            throw UnsupportedException::clientEncryptionNotSupported();
+        }
+        if (isset($options['keyVaultClient'])) {
+            if ($options['keyVaultClient'] instanceof self) {
+                $options['keyVaultClient'] = $options['keyVaultClient']->getManager();
+            } elseif (!$options['keyVaultClient'] instanceof Manager) {
+                throw InvalidArgumentException::invalidType('"keyVaultClient" option', $options['keyVaultClient'], [self::class, Manager::class]);
+            }
+        }
+        return $this->manager->createClientEncryption($options);
     }
 
     public function dropDatabase(string $databaseName, array $options = []): array|object

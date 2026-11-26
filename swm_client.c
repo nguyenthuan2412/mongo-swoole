@@ -14,6 +14,18 @@
 #include "ext/standard/url.h"
 #include "ext/standard/php_mt_rand.h"
 #include <zlib.h>
+#ifdef SWM_HAVE_GSSAPI
+# ifdef SWM_GSSAPI_APPLE
+#  include <GSS/GSS.h>
+# else
+#  include <gssapi/gssapi.h>
+#  include <gssapi/gssapi_krb5.h>
+#  ifdef SWM_HAVE_GSS_PASSWORD
+#   include <gssapi/gssapi_ext.h>
+#  endif
+# endif
+# include <netdb.h>
+#endif
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -176,6 +188,7 @@ struct _swm_client {
     zend_long id;           /* registry id used by background coroutines */
     int pending_checks;     /* parallel heartbeat checks in flight */
     zend_bool bg_scan;      /* a background refresh is running */
+    swm_crypt *crypt;       /* driverOptions['autoEncryption'] */
 };
 
 static zend_bool has_sdam(swm_client *c);
@@ -662,7 +675,8 @@ static int interpret_options(swm_client *c, zend_bool srv, swm_error *err)
         if (c->auth_mechanism && (zend_string_equals_literal_ci(c->auth_mechanism, "PLAIN")
                                   || zend_string_equals_literal_ci(c->auth_mechanism, "MONGODB-X509")
                                   || zend_string_equals_literal_ci(c->auth_mechanism, "MONGODB-AWS")
-                                  || zend_string_equals_literal_ci(c->auth_mechanism, "MONGODB-OIDC"))) {
+                                  || zend_string_equals_literal_ci(c->auth_mechanism, "MONGODB-OIDC")
+                                  || zend_string_equals_literal_ci(c->auth_mechanism, "GSSAPI"))) {
             c->auth_source = zend_string_init(ZEND_STRL("$external"), 0);
         } else if (c->default_db) {
             c->auth_source = zend_string_copy(c->default_db);
@@ -673,7 +687,7 @@ static int interpret_options(swm_client *c, zend_bool srv, swm_error *err)
     if (c->auth_mechanism) {
         const char *m = ZSTR_VAL(c->auth_mechanism);
         if (strcasecmp(m, "SCRAM-SHA-1") && strcasecmp(m, "SCRAM-SHA-256") && strcasecmp(m, "PLAIN") && strcasecmp(m, "MONGODB-X509")
-            && strcasecmp(m, "MONGODB-AWS") && strcasecmp(m, "MONGODB-OIDC")) {
+            && strcasecmp(m, "MONGODB-AWS") && strcasecmp(m, "MONGODB-OIDC") && strcasecmp(m, "GSSAPI")) {
             swm_error_set(err, SWM_ERR_ARG, 0, "Unsupported authMechanism \"%s\"", m);
             return FAILURE;
         }
@@ -691,6 +705,16 @@ static int interpret_options(swm_client *c, zend_bool srv, swm_error *err)
         } else if (Z_TYPE_P(v) == IS_STRING) {
             parse_tags_string(Z_STRVAL_P(v), Z_STRLEN_P(v), &c->auth_props);
         }
+    }
+#ifndef SWM_HAVE_GSSAPI
+    if (c->auth_mechanism && zend_string_equals_literal_ci(c->auth_mechanism, "GSSAPI")) {
+        swm_error_set(err, SWM_ERR_ARG, 0, "GSSAPI (Kerberos) support was not compiled in; rebuild swmongo with --with-swmongo-gssapi");
+        return FAILURE;
+    }
+#endif
+    if (c->auth_mechanism && zend_string_equals_literal_ci(c->auth_mechanism, "GSSAPI") && !c->username) {
+        swm_error_set(err, SWM_ERR_ARG, 0, "GSSAPI requires a username (the Kerberos principal)");
+        return FAILURE;
     }
     if (c->auth_mechanism && zend_string_equals_literal_ci(c->auth_mechanism, "MONGODB-OIDC")) {
         zval *env = hfind(&c->auth_props, "ENVIRONMENT");
@@ -1985,6 +2009,174 @@ static int auth_oidc(swm_client *c, swm_conn *conn, swm_error *err)
     return FAILURE;
 }
 
+#ifdef SWM_HAVE_GSSAPI
+/* ------------------------------------------------------- GSSAPI (Kerberos) */
+static void gss_errmsg(OM_uint32 major, OM_uint32 minor, smart_str *out)
+{
+    OM_uint32 ctx = 0, min2;
+    gss_buffer_desc b;
+    int type = GSS_C_GSS_CODE;
+    OM_uint32 code = major;
+    for (int pass = 0; pass < 2; pass++) {
+        do {
+            if (gss_display_status(&min2, code, type, GSS_C_NO_OID, &ctx, &b) != GSS_S_COMPLETE) break;
+            if (out->s && ZSTR_LEN(out->s)) smart_str_appends(out, "; ");
+            smart_str_appendl(out, b.value, b.length);
+            gss_release_buffer(&min2, &b);
+        } while (ctx != 0);
+        type = GSS_C_MECH_CODE;
+        code = minor;
+        ctx = 0;
+    }
+    smart_str_0(out);
+}
+
+static void gss_fail(swm_error *err, const char *what, OM_uint32 major, OM_uint32 minor)
+{
+    smart_str m = {0};
+    gss_errmsg(major, minor, &m);
+    swm_error_set(err, SWM_ERR_AUTH, 0, "GSSAPI %s failed: %s", what, m.s ? ZSTR_VAL(m.s) : "unknown error");
+    smart_str_free(&m);
+}
+
+static int auth_gssapi(swm_client *c, swm_conn *conn, swm_error *err)
+{
+    zval *v;
+    const char *service = "mongodb";
+    zend_string *host = NULL, *target_str;
+    OM_uint32 major, minor;
+    gss_name_t target = GSS_C_NO_NAME;
+    gss_cred_id_t cred = GSS_C_NO_CREDENTIAL;
+    gss_ctx_id_t ctx = GSS_C_NO_CONTEXT;
+    gss_buffer_desc in = GSS_C_EMPTY_BUFFER, out = GSS_C_EMPTY_BUFFER, nb;
+    zval reply, conv;
+    int rc = FAILURE, step = 0;
+    zend_bool complete = 0;
+
+    ZVAL_UNDEF(&reply);
+    ZVAL_UNDEF(&conv);
+    if ((v = hfind(&c->auth_props, "SERVICE_NAME")) && Z_TYPE_P(v) == IS_STRING) service = Z_STRVAL_P(v);
+    if ((v = hfind(&c->auth_props, "SERVICE_HOST")) && Z_TYPE_P(v) == IS_STRING) {
+        host = zend_string_copy(Z_STR_P(v));
+    } else {
+        zval *canon = hfind(&c->auth_props, "CANONICALIZE_HOST_NAME");
+        host = zend_string_copy(conn->server->host);
+        if (canon && Z_TYPE_P(canon) == IS_STRING && (!strcasecmp(Z_STRVAL_P(canon), "true") || !strcasecmp(Z_STRVAL_P(canon), "forward"))) {
+            struct addrinfo hints, *res = NULL;
+            memset(&hints, 0, sizeof(hints));
+            hints.ai_flags = AI_CANONNAME;
+            if (getaddrinfo(ZSTR_VAL(host), NULL, &hints, &res) == 0 && res && res->ai_canonname) {
+                zend_string_release(host);
+                host = zend_string_init(res->ai_canonname, strlen(res->ai_canonname), 0);
+            }
+            if (res) freeaddrinfo(res);
+        }
+    }
+    if ((v = hfind(&c->auth_props, "SERVICE_REALM")) && Z_TYPE_P(v) == IS_STRING) {
+        target_str = zend_strpprintf(0, "%s/%s@%s", service, ZSTR_VAL(host), Z_STRVAL_P(v));
+        nb.value = ZSTR_VAL(target_str);
+        nb.length = ZSTR_LEN(target_str);
+        major = gss_import_name(&minor, &nb, (gss_OID) GSS_KRB5_NT_PRINCIPAL_NAME, &target);
+    } else {
+        target_str = zend_strpprintf(0, "%s@%s", service, ZSTR_VAL(host));
+        nb.value = ZSTR_VAL(target_str);
+        nb.length = ZSTR_LEN(target_str);
+        major = gss_import_name(&minor, &nb, GSS_C_NT_HOSTBASED_SERVICE, &target);
+    }
+    zend_string_release(target_str);
+    zend_string_release(host);
+    if (GSS_ERROR(major)) { gss_fail(err, "import_name", major, minor); goto out; }
+
+    if (c->password) {
+#ifdef SWM_HAVE_GSS_PASSWORD
+        gss_name_t user = GSS_C_NO_NAME;
+        gss_buffer_desc pw;
+        nb.value = ZSTR_VAL(c->username);
+        nb.length = ZSTR_LEN(c->username);
+        major = gss_import_name(&minor, &nb, GSS_C_NT_USER_NAME, &user);
+        if (GSS_ERROR(major)) { gss_fail(err, "import_name(user)", major, minor); goto out; }
+        pw.value = ZSTR_VAL(c->password);
+        pw.length = ZSTR_LEN(c->password);
+        major = gss_acquire_cred_with_password(&minor, user, &pw, GSS_C_INDEFINITE, GSS_C_NO_OID_SET, GSS_C_INITIATE, &cred, NULL, NULL);
+        gss_release_name(&minor, &user);
+        if (GSS_ERROR(major)) { gss_fail(err, "acquire_cred_with_password", major, minor); goto out; }
+#else
+        swm_error_set(err, SWM_ERR_AUTH, 0, "GSSAPI with a password requires MIT Kerberos (gss_acquire_cred_with_password); use kinit instead");
+        goto out;
+#endif
+    }
+
+    for (step = 0; step < 10; step++) {
+        zval cmd, payload, *pl;
+        zend_string *srv;
+        if (!complete) {
+            major = gss_init_sec_context(&minor, cred, &ctx, target, GSS_C_NO_OID, GSS_C_MUTUAL_FLAG, 0,
+                                         GSS_C_NO_CHANNEL_BINDINGS, &in, NULL, &out, NULL, NULL);
+            if (GSS_ERROR(major)) { gss_fail(err, "init_sec_context", major, minor); goto out; }
+            if (major == GSS_S_COMPLETE) complete = 1;
+        } else {
+            /* RFC 4752: unwrap the server's security layer offer, answer "no layer" + authzid */
+            gss_buffer_desc wrapped, unwrapped = GSS_C_EMPTY_BUFFER, msg;
+            int conf = 0;
+            unsigned char *buf;
+            wrapped.value = in.value;
+            wrapped.length = in.length;
+            major = gss_unwrap(&minor, ctx, &wrapped, &unwrapped, &conf, NULL);
+            if (GSS_ERROR(major) || unwrapped.length < 4) { gss_fail(err, "unwrap", major, minor); gss_release_buffer(&minor, &unwrapped); goto out; }
+            msg.length = 4 + ZSTR_LEN(c->username);
+            buf = emalloc(msg.length);
+            memcpy(buf, unwrapped.value, 4);
+            buf[0] = 1;
+            memcpy(buf + 4, ZSTR_VAL(c->username), ZSTR_LEN(c->username));
+            msg.value = buf;
+            gss_release_buffer(&minor, &unwrapped);
+            major = gss_wrap(&minor, ctx, 0, GSS_C_QOP_DEFAULT, &msg, &conf, &out);
+            efree(buf);
+            if (GSS_ERROR(major)) { gss_fail(err, "wrap", major, minor); goto out; }
+        }
+        array_init(&cmd);
+        if (Z_TYPE(conv) == IS_UNDEF) {
+            add_assoc_long(&cmd, "saslStart", 1);
+            add_assoc_string(&cmd, "mechanism", "GSSAPI");
+            add_assoc_long(&cmd, "autoAuthorize", 1);
+        } else {
+            add_assoc_long(&cmd, "saslContinue", 1);
+            Z_TRY_ADDREF(conv);
+            add_assoc_zval(&cmd, "conversationId", &conv);
+        }
+        swm_new_binary(&payload, out.value ? (char *) out.value : "", out.length, 0);
+        add_assoc_zval(&cmd, "payload", &payload);
+        gss_release_buffer(&minor, &out);
+        if (in.value && step > 0) { efree(in.value); }
+        in.value = NULL;
+        in.length = 0;
+        zval_ptr_dtor(&reply);
+        rc = sasl_command(c, conn, &cmd, &reply, err);
+        zval_ptr_dtor(&cmd);
+        if (rc == FAILURE) goto out;
+        rc = FAILURE;
+        if (Z_TYPE(conv) == IS_UNDEF && (v = hfind(&reply, "conversationId"))) ZVAL_COPY(&conv, v);
+        if ((v = hfind(&reply, "done")) && zend_is_true(v)) { rc = SUCCESS; goto out; }
+        pl = hfind(&reply, "payload");
+        srv = pl ? swm_binary_data(pl) : NULL;
+        if (srv && ZSTR_LEN(srv)) {
+            in.value = emalloc(ZSTR_LEN(srv));
+            memcpy(in.value, ZSTR_VAL(srv), ZSTR_LEN(srv));
+            in.length = ZSTR_LEN(srv);
+        }
+    }
+    swm_error_set(err, SWM_ERR_AUTH, 0, "GSSAPI conversation did not complete");
+out:
+    if (in.value) efree(in.value);
+    zval_ptr_dtor(&reply);
+    zval_ptr_dtor(&conv);
+    if (ctx != GSS_C_NO_CONTEXT) gss_delete_sec_context(&minor, &ctx, GSS_C_NO_BUFFER);
+    if (cred != GSS_C_NO_CREDENTIAL) gss_release_cred(&minor, &cred);
+    if (target != GSS_C_NO_NAME) gss_release_name(&minor, &target);
+    return rc;
+}
+#endif
+
 static int authenticate(swm_client *c, swm_conn *conn, zval *hello, swm_error *err)
 {
     const char *mech = c->auth_mechanism ? ZSTR_VAL(c->auth_mechanism) : NULL;
@@ -2000,6 +2192,9 @@ static int authenticate(swm_client *c, swm_conn *conn, zval *hello, swm_error *e
         }
     }
     if (!strcasecmp(mech, "MONGODB-AWS")) return auth_aws(c, conn, err);
+#ifdef SWM_HAVE_GSSAPI
+    if (!strcasecmp(mech, "GSSAPI")) return auth_gssapi(c, conn, err);
+#endif
     if (!strcasecmp(mech, "MONGODB-OIDC")) return auth_oidc(c, conn, err);
     if (!strcasecmp(mech, "MONGODB-X509")) {
         array_init(&cmd);
@@ -3020,6 +3215,34 @@ swm_client *swm_client_create(zend_string *uri, zval *uri_options, zval *driver_
         swm_client_release(c);
         return NULL;
     }
+    if (driver_options && Z_TYPE_P(driver_options) == IS_ARRAY) {
+        zval *ae = hfind(driver_options, "autoEncryption");
+        if (ae && Z_TYPE_P(ae) != IS_NULL) {
+#ifdef SWM_HAVE_MONGOCRYPT
+            zval *kv = hfind(ae, "keyVaultClient");
+            swm_client *kvc = NULL;
+            if (Z_TYPE_P(ae) != IS_ARRAY) {
+                swm_error_set(err, SWM_ERR_ARG, 0, "Expected \"autoEncryption\" driver option to be an array");
+                swm_client_release(c);
+                return NULL;
+            }
+            if (kv && Z_TYPE_P(kv) != IS_NULL) {
+                if (Z_TYPE_P(kv) != IS_OBJECT || Z_OBJCE_P(kv) != swm_ce_Manager) {
+                    swm_error_set(err, SWM_ERR_ARG, 0, "Expected \"keyVaultClient\" option to be SwooleMongo\\Driver\\Manager");
+                    swm_client_release(c);
+                    return NULL;
+                }
+                kvc = swm_manager_from(Z_OBJ_P(kv))->client;
+            }
+            c->crypt = swm_crypt_new(c, ae, 1, kvc, err);
+            if (!c->crypt) { swm_client_release(c); return NULL; }
+#else
+            swm_error_set(err, SWM_ERR_ARG, 0, "Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt");
+            swm_client_release(c);
+            return NULL;
+#endif
+        }
+    }
     if (g_nclients == g_clients_cap) {
         g_clients_cap = g_clients_cap ? g_clients_cap * 2 : 8;
         g_clients = erealloc(g_clients, sizeof(swm_client *) * g_clients_cap);
@@ -3075,7 +3298,21 @@ void swm_client_release(swm_client *c)
     zval_ptr_dtor(&c->kill_queue);
     zval_ptr_dtor(&c->topology_id);
     zval_ptr_dtor(&c->ctx_zv);
+#ifdef SWM_HAVE_MONGOCRYPT
+    if (c->crypt) swm_crypt_free(c->crypt);
+#endif
     efree(c);
+}
+
+swm_crypt *swm_client_crypt(swm_client *c) { return c->crypt; }
+
+zval *swm_client_encrypted_fields_map(swm_client *c)
+{
+#ifdef SWM_HAVE_MONGOCRYPT
+    return c->crypt ? swm_crypt_encrypted_fields_map(c->crypt) : NULL;
+#else
+    return NULL;
+#endif
 }
 
 /* Called from RSHUTDOWN: streams must be closed before the resource list is torn down. */
@@ -3338,7 +3575,61 @@ static void merge_read_concern(zval *final, zval *base, zval *after)
     }
 }
 
+static int execute_inner(swm_client *c, zend_string *db, zval *cmd, swm_exec_opts *o, zval *reply, zend_string **raw,
+                zend_string **used_server, swm_error *err);
+
 int swm_execute(swm_client *c, zend_string *db, zval *cmd, swm_exec_opts *o, zval *reply, zend_string **raw,
+                zend_string **used_server, swm_error *err)
+{
+#ifdef SWM_HAVE_MONGOCRYPT
+    if (c->crypt && !o->no_crypt && !c->closed) {
+        zval enc, *seq = o->sequences, *saved = o->sequences;
+        zend_string *own_raw = NULL;
+        int rc;
+        /* libmongocrypt works on a single document: fold document sequences back into the command */
+        if (Z_TYPE_P(cmd) == IS_ARRAY) {
+            ZVAL_ARR(&enc, zend_array_dup(Z_ARRVAL_P(cmd)));
+        } else {
+            smart_str b = {0};
+            if (swm_bson_encode(&b, cmd, err) == FAILURE) { smart_str_free(&b); return FAILURE; }
+            rc = swm_bson_decode(ZSTR_VAL(b.s), ZSTR_LEN(b.s), &enc, err);
+            smart_str_free(&b);
+            if (rc == FAILURE) return FAILURE;
+        }
+        if (seq && Z_TYPE_P(seq) == IS_ARRAY) {
+            zend_string *id;
+            zval *docs, *d;
+            ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(seq), id, docs) {
+                zval list;
+                if (!id || Z_TYPE_P(docs) != IS_ARRAY) continue;
+                array_init(&list);
+                ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(docs), d) {
+                    zval item;
+                    ZVAL_DEREF(d);
+                    if (Z_TYPE_P(d) == IS_STRING) swm_new_document_raw(&item, swm_ce_Document, Z_STRVAL_P(d), Z_STRLEN_P(d));
+                    else ZVAL_COPY(&item, d);
+                    add_next_index_zval(&list, &item);
+                } ZEND_HASH_FOREACH_END();
+                zend_hash_update(Z_ARRVAL(enc), id, &list);
+            } ZEND_HASH_FOREACH_END();
+        }
+        if (swm_crypt_auto_encrypt(c->crypt, db, &enc, err) == FAILURE) { zval_ptr_dtor(&enc); return FAILURE; }
+        o->sequences = NULL;
+        rc = execute_inner(c, db, &enc, o, reply, raw ? raw : &own_raw, used_server, err);
+        o->sequences = saved;
+        zval_ptr_dtor(&enc);
+        if (rc == SUCCESS) {
+            rc = swm_crypt_auto_decrypt(c->crypt, reply, raw ? raw : &own_raw, err);
+            if (rc == FAILURE) { zval_ptr_dtor(reply); ZVAL_UNDEF(reply); }
+        }
+        if (own_raw) zend_string_release(own_raw);
+        return rc;
+    }
+#endif
+    return execute_inner(c, db, cmd, o, reply, raw, used_server, err);
+}
+
+static int execute_inner(swm_client *c, zend_string *db, zval *cmd, swm_exec_opts *o, zval *reply, zend_string **raw,
                 zend_string **used_server, swm_error *err)
 {
     swm_session_obj *sess = o->session ? swm_session_from(Z_OBJ_P(o->session)) : NULL;

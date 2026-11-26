@@ -62,15 +62,52 @@ services:
       PROXY_USER: pu
       PROXY_PASSWORD: pp
 
+  # Kerberos: KDC + MongoDB Enterprise accepting GSSAPI
+  kdc:
+    build: { context: ./docker, dockerfile: kdc/Dockerfile }
+    hostname: kdc
+    volumes: ["krb-keytab:/keytab"]
+  krb-mongo:
+    build: { context: ./docker, dockerfile: krb-mongo/Dockerfile }
+    hostname: krb-mongo
+    depends_on: [kdc]
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: root
+      MONGODB_INITDB_ROOT_PASSWORD: secret
+      KRB5_KTNAME: /keytab/mongodb.keytab
+    volumes:
+      - krb-keytab:/keytab:ro
+      - ./docker/krb5.conf:/etc/krb5.conf:ro
+      - ./docker/krb-init.js:/docker-entrypoint-initdb.d/krb-init.js:ro
+    entrypoint: ["sh", "-c", "while [ ! -f /keytab/ready ]; do sleep 1; done; exec python3 /usr/local/bin/docker-entrypoint.py mongod --setParameter authenticationMechanisms=GSSAPI,SCRAM-SHA-256"]
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "-u", "root", "-p", "secret", "--quiet", "--eval", "quit(db.adminCommand({ping: 1}).ok ? 0 : 1)"]
+
+  # mongocryptd for automatic encryption without crypt_shared
+  mongocryptd:
+    image: mongodb/mongodb-enterprise-server:8.0-ubuntu2204
+    # mongocryptd only listens on localhost: the tests container shares its network namespace
+    entrypoint: ["mongocryptd", "--port", "27020", "--idleShutdownTimeoutSecs", "0", "--pidfilepath", "/tmp/mongocryptd.pid"]
+
   tests:
     build: .
+    network_mode: "service:mongocryptd"
     depends_on:
       mongo-rs: { condition: service_healthy }
       mongo-rs8: { condition: service_healthy }
       mongo-auth: { condition: service_healthy }
       lb: { condition: service_started }
       socks: { condition: service_started }
+      krb-mongo: { condition: service_healthy }
+      mongocryptd: { condition: service_started }
+    volumes:
+      - ./docker/krb5.conf:/etc/krb5.conf:ro
     environment:
+      SWM_GSSAPI_URI: mongodb://swmuser%40EXAMPLE.COM:swmpass@krb-mongo:27017/?authMechanism=GSSAPI
+      SWM_GSSAPI_KINIT: swmuser@EXAMPLE.COM:swmpass
+      SWM_CRYPT_SHARED: /opt/crypt/mongo_crypt_v1.so
+      SWM_MONGOCRYPTD_URI: mongodb://127.0.0.1:27020
       SWM_RS_URI: mongodb://mongo-rs:27017/?replicaSet=rs0
       SWM_AUTH_URI: mongodb://root:secret@mongo-auth:27017/?authSource=admin
       SWM_RS8_URI: mongodb://mongo-rs8:27017/?replicaSet=rs8
@@ -81,4 +118,8 @@ services:
              php testsuite/run.php &&
              php testsuite/features.php &&
              php testsuite/leak.php &&
-             php testsuite/compression.php"
+             php testsuite/compression.php &&
+             php testsuite/security.php"
+
+volumes:
+  krb-keytab:

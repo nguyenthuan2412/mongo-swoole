@@ -1541,6 +1541,8 @@ static void exec_bulk(swm_client *c, zend_string *prefer, zend_string *ns, zval 
     zend_long max_batch = swm_client_max_batch(c);
     size_t max_bytes = (size_t) 47 * 1024 * 1024;
 
+    /* auto encryption: libmongocrypt needs commands below 2 MiB before encryption */
+    if (swm_client_crypt(c)) max_bytes = (size_t) 2 * 1024 * 1024;
     swm_error_init(&err);
     memset(&st, 0, sizeof(st));
     if (Z_TYPE_P(PROP(bo, 2)) == IS_TRUE) {
@@ -2301,6 +2303,17 @@ PHP_METHOD(SwooleMongo_Driver_Manager, getWriteConcern)
     zval_ptr_dtor(&arr);
 }
 
+PHP_METHOD(SwooleMongo_Driver_Manager, getEncryptedFieldsMap)
+{
+    swm_manager_obj *m = THIS_MANAGER();
+    zval *map;
+    ZEND_PARSE_PARAMETERS_NONE();
+    ENSURE_MANAGER(m);
+    map = swm_client_encrypted_fields_map(m->client);
+    if (map) RETURN_COPY(map);
+    RETURN_NULL();
+}
+
 PHP_METHOD(SwooleMongo_Driver_Manager, addSubscriber)
 {
     zval *sub;
@@ -2329,7 +2342,31 @@ PHP_METHOD(SwooleMongo_Driver_Manager, createClientEncryption)
     ZEND_PARSE_PARAMETERS_START(1, 1)
         Z_PARAM_ARRAY(o)
     ZEND_PARSE_PARAMETERS_END();
-    swm_throw(swm_ce_RuntimeException, "Client-side field level encryption is not supported by swmongo");
+#ifdef SWM_HAVE_MONGOCRYPT
+    {
+        swm_manager_obj *m = THIS_MANAGER();
+        zval *kv = zend_hash_str_find_deref(Z_ARRVAL_P(o), ZEND_STRL("keyVaultClient"));
+        swm_client *kvc;
+        swm_error err;
+        ENSURE_MANAGER(m);
+        swm_error_init(&err);
+        if (kv && Z_TYPE_P(kv) != IS_NULL && (Z_TYPE_P(kv) != IS_OBJECT || Z_OBJCE_P(kv) != swm_ce_Manager)) {
+            swm_throw(swm_ce_InvalidArgumentException, "Expected \"keyVaultClient\" option to be SwooleMongo\\Driver\\Manager");
+            RETURN_THROWS();
+        }
+        kvc = kv && Z_TYPE_P(kv) == IS_OBJECT ? swm_manager_from(Z_OBJ_P(kv))->client : m->client;
+        object_init_ex(return_value, swm_ce_ClientEncryption);
+        swm_client_encryption_init(return_value, kvc, o, &err);
+        if (err.kind != SWM_ERR_NONE) {
+            zval_ptr_dtor(return_value);
+            ZVAL_UNDEF(return_value);
+            swm_error_throw(&err);
+            RETURN_THROWS();
+        }
+    }
+#else
+    swm_throw(swm_ce_RuntimeException, "Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt");
+#endif
 }
 
 /* @internal entry point for background coroutines (topology monitoring) */
@@ -3009,7 +3046,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(ai_subscriber, 0, 1, IS_VOID, 0)
     ZEND_ARG_OBJ_INFO(0, subscriber, SwooleMongo\\Driver\\Monitoring\\Subscriber, 0)
 ZEND_END_ARG_INFO()
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(ai_cce, 0, 1, IS_OBJECT, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(ai_get_efm, 0, 0, MAY_BE_ARRAY | MAY_BE_OBJECT | MAY_BE_NULL)
+ZEND_END_ARG_INFO()
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(ai_cce, 0, 1, SwooleMongo\\Driver\\ClientEncryption, 0)
     ZEND_ARG_TYPE_INFO(0, options, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
@@ -3146,6 +3185,7 @@ static const zend_function_entry manager_methods[] = {
     ME(Manager, getReadPreference, ai_get_rp)
     ME(Manager, getReadConcern, ai_get_rc)
     ME(Manager, getWriteConcern, ai_get_wc)
+    ME(Manager, getEncryptedFieldsMap, ai_get_efm)
     ME(Manager, startSession, ai_start_session)
     ME(Manager, addSubscriber, ai_subscriber)
     ME(Manager, removeSubscriber, ai_subscriber)

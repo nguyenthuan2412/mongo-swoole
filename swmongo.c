@@ -19,6 +19,7 @@ zend_class_entry *swm_ce_CommandException;
 zend_class_entry *swm_ce_ExecutionTimeoutException;
 zend_class_entry *swm_ce_WriteException;
 zend_class_entry *swm_ce_BulkWriteException;
+zend_class_entry *swm_ce_EncryptionException;
 
 PHP_INI_BEGIN()
     STD_PHP_INI_BOOLEAN("swmongo.enable_library", "1", PHP_INI_SYSTEM, OnUpdateBool, enable_library, zend_swmongo_globals, swmongo_globals)
@@ -115,6 +116,7 @@ static void exceptions_minit(void)
     swm_ce_WriteException->ce_flags |= ZEND_ACC_EXPLICIT_ABSTRACT_CLASS;
     zend_declare_property_null(swm_ce_WriteException, ZEND_STRL("writeResult"), ZEND_ACC_PROTECTED);
     swm_ce_BulkWriteException = reg_exception(NS "BulkWriteException", swm_ce_WriteException, NULL);
+    swm_ce_EncryptionException = reg_exception(NS "EncryptionException", swm_ce_RuntimeException, NULL);
 }
 
 /* ------------------------------------------------------------ module */
@@ -133,6 +135,7 @@ PHP_MINIT_FUNCTION(swmongo)
     exceptions_minit();
     swm_bson_minit();
     swm_driver_minit();
+    swm_crypt_minit();
     REGISTER_STRING_CONSTANT("SWMONGO_VERSION", PHP_SWMONGO_VERSION, CONST_CS | CONST_PERSISTENT);
     return SUCCESS;
 }

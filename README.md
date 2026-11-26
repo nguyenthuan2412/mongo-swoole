@@ -27,7 +27,20 @@ sudo make install
 extension=swmongo
 ```
 
-Hoặc dùng Docker: `docker build -t swmongo .` (PHP 8.3 + Swoole 5.1 + swmongo, kèm zstd/intl).
+Tuỳ chọn khi build:
+
+| Tuỳ chọn | Cần | Bật tính năng |
+|---|---|---|
+| `--with-swmongo-gssapi[=DIR]` | MIT Kerberos (`libkrb5-dev`, hoặc `brew install krb5`) | `authMechanism=GSSAPI` |
+| `--with-swmongo-mongocrypt[=DIR]` | libmongocrypt ≥ 1.8 (tìm qua pkg-config, có thể truyền prefix) | `ClientEncryption`, `autoEncryption` (CSFLE + Queryable Encryption) |
+
+Mặc định (`auto`), mỗi thư viện có trên máy sẽ tự được bật.
+
+```sh
+./build.sh --with-swmongo-gssapi --with-swmongo-mongocrypt=/opt/libmongocrypt
+```
+
+Hoặc dùng Docker: `docker build -t swmongo .`. Image gồm PHP 8.3, Swoole 5.1 và swmongo, kèm zstd/intl, Kerberos, libmongocrypt và crypt_shared.
 
 INI: `swmongo.enable_library=1` (nạp tầng library nhúng sẵn) và `swmongo.warn_blocking=1` (cảnh báo khi chạy trong coroutine mà chưa bật hook).
 
@@ -83,14 +96,37 @@ Xem [examples/http_server.php](examples/http_server.php). Nếu bạn quản lý
   - Nén zlib (zstd/snappy khi có cài ext tương ứng), TLS, SOCKS5 proxy.
   - Theo dõi topology song song bằng coroutine; refresh định kỳ chạy nền nên request không bị chặn.
 - **Xác thực**: SCRAM-SHA-1, SCRAM-SHA-256 (SASLprep), PLAIN, MONGODB-X509, MONGODB-AWS (SigV4, lấy credentials từ URI/env/web identity/ECS/EC2),
-  MONGODB-OIDC (driver option `oidcCallback` hoặc `ENVIRONMENT` test/azure/gcp/k8s, tự xác thực lại khi gặp lỗi 391).
+  MONGODB-OIDC (driver option `oidcCallback` hoặc `ENVIRONMENT` test/azure/gcp/k8s, tự xác thực lại khi gặp lỗi 391), GSSAPI (Kerberos).
+  GSSAPI hỗ trợ `SERVICE_NAME`, `SERVICE_HOST`, `SERVICE_REALM`, `CANONICALIZE_HOST_NAME`. Có thể lấy ticket bằng `kinit` (qua `KRB5CCNAME`) hoặc truyền mật khẩu ngay trong URI.
+  Lưu ý: libkrb5 tự mở socket tới KDC (Swoole không hook được), nên bước xin ticket sẽ chặn worker một chút. Việc này chỉ xảy ra khi mở connection mới, không phải ở mỗi lệnh.
+- **Mã hoá phía client (libmongocrypt)**:
+  - `ClientEncryption`: `createDataKey`, `encrypt`, `encryptExpression`, `decrypt`, `rewrapManyDataKey`, `getKey(s)`, `getKeyByAltName`,
+    `add/removeKeyAltName`, `deleteKey`; thuật toán Deterministic/Random, `Indexed`/`Unindexed`/`Range`.
+  - Tự động mã hoá/giải mã qua driver option `autoEncryption`: `keyVaultNamespace`, `keyVaultClient`, `kmsProviders` (local/aws/azure/gcp/kmip),
+    `schemaMap`, `encryptedFieldsMap`, `bypassAutoEncryption`, `bypassQueryAnalysis`, `tlsOptions`. Phân tích query dùng
+    `extraOptions.cryptSharedLibPath` (crypt_shared) hoặc mongocryptd (`mongocryptdURI`, `mongocryptdBypassSpawn`, `mongocryptdSpawnPath/Args`).
+  - `Database::createEncryptedCollection()`. `createCollection`/`dropCollection` tự tạo và xoá collection trạng thái `enxcol_.*.esc/ecoc` của Queryable Encryption.
+  - Các lệnh tới key vault, mongocryptd và `listCollections` đều chạy qua driver nên cũng non-blocking.
+    Riêng request tới KMS từ xa (TLS) chỉ non-blocking khi Swoole hook SSL (`SWOOLE_HOOK_ALL` đã gồm).
 
-**Chưa hỗ trợ**: Kerberos/GSSAPI (cần libgssapi), Client-Side Field Level Encryption / Queryable Encryption (cần libmongocrypt), `tlsCRLFile`.
+```php
+$client = new SwooleMongo\Client($uri, [], ['autoEncryption' => [
+    'keyVaultNamespace' => 'encryption.__keyVault',
+    'kmsProviders' => ['local' => ['key' => new SwooleMongo\BSON\Binary($key96bytes)]],
+    'extraOptions' => ['cryptSharedLibPath' => '/opt/crypt/mongo_crypt_v1.so'],
+]]);
+```
+
+**Chưa hỗ trợ**: `tlsCRLFile`.
 
 ## Hiệu năng
 
 - Phần nặng viết bằng C: BSON, socket, OP_MSG, nén, xác thực, chia batch cho bulk, cursor, topology.
 - Tầng PHP nhúng chỉ tốn khoảng 1–1,5 µs mỗi lệnh. Một vòng request tới MongoDB mất khoảng 600 µs, nên phần chênh nằm trong nhiễu đo.
+
+## Benchmark so với Node.js
+
+Xem [bench/README.md](bench/README.md). Cùng workload trên cùng server MongoDB, swmongo nhanh hơn driver Node.js chính thức từ 1,0 tới 1,5 lần ở thao tác tuần tự, và khoảng 2,1 lần với `findOne` chạy 100 coroutine đồng thời.
 
 ## Lưu ý về Swoole trên arm64
 
@@ -103,10 +139,11 @@ Context switch của Swoole trên arm64 không bảo toàn các thanh ghi số t
 docker compose up --build --exit-code-from tests --abort-on-container-exit tests
 ```
 
-Lệnh trên dựng đủ môi trường: replica set MongoDB 7 và 8, server có auth, sharded cluster sau HAProxy, SOCKS5 proxy. Sau đó nó chạy:
+Lệnh trên dựng đủ môi trường: replica set MongoDB 7 và 8, server có auth, sharded cluster sau HAProxy, SOCKS5 proxy, KDC Kerberos, MongoDB Enterprise (GSSAPI) và mongocryptd. Sau đó nó chạy:
 - `testsuite/run.php`: CRUD, BSON, transaction, change stream, GridFS, coroutine, auth.
 - `testsuite/features.php`: serverApi, w:0, timeoutMS, snapshot, SDAM, bulkWrite cho MongoDB 8, load balancer, SOCKS5.
 - `testsuite/leak.php`: kiểm tra bộ nhớ và cursor bị bỏ dở.
 - `testsuite/compression.php`: kiểm tra nén.
+- `testsuite/security.php`: Kerberos (KDC + MongoDB Enterprise), CSFLE/QE (crypt_shared và mongocryptd).
 
 GitHub Actions (`.github/workflows/ci.yml`) chạy cùng lệnh này trên Linux x86_64.

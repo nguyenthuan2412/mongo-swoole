@@ -182,6 +182,7 @@ void swm_error_to_exception(swm_error *e, zval *out)
         case SWM_ERR_TIMEOUT:
         case SWM_ERR_SELECTION: ce = swm_ce_ConnectionTimeoutException; break;
         case SWM_ERR_AUTH: ce = swm_ce_AuthenticationException; break;
+        case SWM_ERR_RUNTIME_CRYPT: ce = swm_ce_EncryptionException; break;
         case SWM_ERR_SERVER: ce = e->code == 50 ? swm_ce_ExecutionTimeoutException : swm_ce_CommandException; break;
         default: ce = swm_ce_RuntimeException; break;
     }

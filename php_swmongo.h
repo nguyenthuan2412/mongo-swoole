@@ -61,6 +61,7 @@ extern zend_class_entry *swm_ce_CommandException;
 extern zend_class_entry *swm_ce_ExecutionTimeoutException;
 extern zend_class_entry *swm_ce_WriteException;
 extern zend_class_entry *swm_ce_BulkWriteException;
+extern zend_class_entry *swm_ce_EncryptionException;
 
 /* ------------------------------------------------------- SwooleMongo\BSON */
 extern zend_class_entry *swm_ce_Type;
@@ -114,6 +115,7 @@ typedef enum {
     SWM_ERR_AUTH,
     SWM_ERR_SERVER,
     SWM_ERR_PROTOCOL,
+    SWM_ERR_RUNTIME_CRYPT,
 } swm_err_kind;
 
 typedef struct {
@@ -290,6 +292,7 @@ typedef struct {
     void *use_conn;      /* load balanced mode: run on this pinned connection */
     void **pin_out;      /* load balanced mode: keep the connection when a cursor stays open */
     zend_bool pinned_dead; /* out: the pinned connection was closed because of an error */
+    zend_bool no_crypt;  /* skip automatic encryption / decryption */
 } swm_exec_opts;
 
 swm_client *swm_client_create(zend_string *uri, zval *uri_options, zval *driver_options, swm_error *err);
@@ -314,6 +317,22 @@ zend_bool swm_client_load_balanced(swm_client *c);
 void swm_client_queue_kill(swm_client *c, zend_string *server, zend_string *db, zend_string *coll, int64_t id);
 zend_long swm_client_max_batch(swm_client *c);
 zend_long swm_client_max_bson(swm_client *c);
+
+/* CSFLE / Queryable Encryption (swm_crypt.c) */
+typedef struct _swm_crypt swm_crypt;
+extern zend_class_entry *swm_ce_ClientEncryption;
+void swm_crypt_minit(void);
+#ifdef SWM_HAVE_MONGOCRYPT
+swm_crypt *swm_crypt_new(swm_client *owner, zval *opts, zend_bool auto_mode, swm_client *keyvault, swm_error *err);
+void swm_crypt_free(swm_crypt *cr);
+zend_bool swm_crypt_bypass_auto(swm_crypt *cr);
+zval *swm_crypt_encrypted_fields_map(swm_crypt *cr);
+int swm_crypt_auto_encrypt(swm_crypt *cr, zend_string *db, zval *cmd, swm_error *err);
+int swm_crypt_auto_decrypt(swm_crypt *cr, zval *reply, zend_string **raw, swm_error *err);
+void swm_client_encryption_init(zval *obj, swm_client *keyvault, zval *options, swm_error *err);
+#endif
+swm_crypt *swm_client_crypt(swm_client *c);
+zval *swm_client_encrypted_fields_map(swm_client *c);
 
 void swm_session_pool_acquire(swm_client *c, swm_server_session *out);
 void swm_session_pool_release(swm_client *c, swm_server_session *ss);

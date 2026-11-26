@@ -67,7 +67,7 @@ class UnsupportedException extends RuntimeException
 
     public static function clientEncryptionNotSupported(): self
     {
-        return new self('Client-side field level encryption is not supported by swmongo');
+        return new self('Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt');
     }
 }
 
@@ -81,6 +81,20 @@ class ResumeTokenException extends RuntimeException
     public static function notFound(): self
     {
         return new self('Resume token not found in change document');
+    }
+}
+
+class CreateEncryptedCollectionException extends RuntimeException
+{
+    public function __construct(\Throwable $previous, private array $encryptedFields)
+    {
+        parent::__construct(sprintf('Creating encrypted collection failed due to previous %s: %s', get_class($previous), $previous->getMessage()), 0, $previous);
+    }
+
+    /** encryptedFields including the keyIds of the data keys created so far */
+    public function getEncryptedFields(): array
+    {
+        return $this->encryptedFields;
     }
 }
 
@@ -102,6 +116,47 @@ use SwooleMongo\Exception\InvalidArgumentException;
  */
 final class Functions
 {
+    /** encryptedFields configured for db.coll in the autoEncryption encryptedFieldsMap, or null */
+    public static function encryptedFieldsFromMap(Manager $manager, string $db, string $coll): array|object|null
+    {
+        $map = $manager->getEncryptedFieldsMap();
+        if ($map === null) return null;
+        if ($map instanceof Document) $map = $map->toPHP(['root' => 'array', 'document' => 'array', 'array' => 'array']);
+        $map = is_object($map) ? get_object_vars($map) : $map;
+        return $map[$db . '.' . $coll] ?? null;
+    }
+
+    /** names of the Queryable Encryption state collections (esc, ecoc) of a collection */
+    public static function encryptedStateCollections(string $coll, array $encryptedFields): array
+    {
+        return [
+            $encryptedFields['escCollection'] ?? 'enxcol_.' . $coll . '.esc',
+            $encryptedFields['ecocCollection'] ?? 'enxcol_.' . $coll . '.ecoc',
+        ];
+    }
+
+    /** drop that also removes the Queryable Encryption state collections */
+    public static function dropCollection(Manager $manager, string $db, string $coll, array $options): array|object
+    {
+        $server = self::selectServer($manager, $options);
+        $ef = $options['encryptedFields'] ?? self::encryptedFieldsFromMap($manager, $db, $coll);
+        if ($ef === null && $manager->getEncryptedFieldsMap() !== null) {
+            // auto encryption is configured: look the collection options up on the server
+            $info = (new Operation\ListCollections($db, ['filter' => ['name' => $coll]] + array_intersect_key($options, ['session' => 1])))->execute($server);
+            foreach ($info as $ci) {
+                $ef = $ci->getOptions()['encryptedFields'] ?? null;
+            }
+        }
+        unset($options['encryptedFields']);
+        if ($ef !== null) {
+            $aux = array_intersect_key($options, ['session' => 1, 'writeConcern' => 1]);
+            foreach (self::encryptedStateCollections($coll, self::documentToArray($ef)) as $state) {
+                (new Operation\DropCollection($db, $state, $aux))->execute($server);
+            }
+        }
+        return (new Operation\DropCollection($db, $coll, $options))->execute($server);
+    }
+
     public static function documentToArray(array|object $document): array
     {
         if ($document instanceof Document) {
