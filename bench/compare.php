@@ -1,8 +1,24 @@
 <?php
-/** php bench/compare.php php.json node.json -> markdown table */
-[$a, $b] = [json_decode(file_get_contents($argv[1]), true), json_decode(file_get_contents($argv[2]), true)];
-echo "| Workload | swmongo ops/s | Node.js ops/s | swmongo / Node | swmongo p50 / p99 ms | Node p50 / p99 ms |\n|---|---:|---:|---:|---:|---:|\n";
-foreach ($a as $k => $r) {
-    $n = $b[$k];
-    printf("| %s | %s | %s | %.2fx | %s / %s | %s / %s |\n", $r['name'], number_format($r['opsSec']), number_format($n['opsSec']), $r['opsSec'] / $n['opsSec'], $r['p50'], $r['p99'], $n['p50'], $n['p99']);
+/**
+ * php bench/compare.php php.json node.json [java.json]  ->  markdown table (ops/s, higher is better)
+ * Rows are matched by workload name; Java's extra "(platform threads)" rows are listed at the end.
+ */
+$sets = ['swoole-mongo' => $argv[1], 'Node.js' => $argv[2]] + (isset($argv[3]) ? ['Java' => $argv[3]] : []);
+$data = [];
+foreach ($sets as $label => $file) {
+    foreach (json_decode(file_get_contents($file), true) as $r) $data[$r['name']][$label] = $r;
+}
+$labels = array_keys($sets);
+echo '| Workload | ' . implode(' | ', array_map(fn ($l) => "$l ops/s", $labels)) . ' | ' . implode(' | ', array_map(fn ($l) => "$l p50 / p99 ms", $labels)) . " |\n";
+echo '|---|' . str_repeat('---:|', count($labels) * 2) . "\n";
+foreach ($data as $name => $row) {
+    $best = max(array_map(fn ($r) => $r['opsSec'], $row));
+    $ops = $lat = [];
+    foreach ($labels as $l) {
+        if (!isset($row[$l])) { $ops[] = '–'; $lat[] = '–'; continue; }
+        $v = number_format($row[$l]['opsSec']);
+        $ops[] = $row[$l]['opsSec'] == $best && count($row) > 1 ? "**$v**" : $v;
+        $lat[] = $row[$l]['p50'] . ' / ' . $row[$l]['p99'];
+    }
+    echo "| $name | " . implode(' | ', $ops) . ' | ' . implode(' | ', $lat) . " |\n";
 }

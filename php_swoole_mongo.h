@@ -1,5 +1,5 @@
 /*
- * swmongo - coroutine friendly MongoDB driver for PHP / Swoole.
+ * swoole-mongo - coroutine friendly MongoDB driver for PHP / Swoole.
  *
  * Class layout mirrors the official stack (ext-mongodb + mongodb/mongodb)
  * under the SwooleMongo namespace:
@@ -13,8 +13,8 @@
  * runtime hook (SWOOLE_HOOK_TCP / UNIX / SSL) is enabled every socket
  * operation transparently yields to the Swoole scheduler.
  */
-#ifndef PHP_SWMONGO_H
-#define PHP_SWMONGO_H
+#ifndef PHP_SWOOLE_MONGO_H
+#define PHP_SWOOLE_MONGO_H
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -33,19 +33,19 @@
 #include "ext/json/php_json.h"
 #include "ext/date/php_date.h"
 
-#define PHP_SWMONGO_VERSION "0.2.0"
-#define SWM_DRIVER_NAME "swmongo"
+#define PHP_SWOOLE_MONGO_VERSION "0.2.0"
+#define SWM_DRIVER_NAME "swoole-mongo"
 
-extern zend_module_entry swmongo_module_entry;
-#define phpext_swmongo_ptr &swmongo_module_entry
+extern zend_module_entry swoole_mongo_module_entry;
+#define phpext_swoole_mongo_ptr &swoole_mongo_module_entry
 
-ZEND_BEGIN_MODULE_GLOBALS(swmongo)
+ZEND_BEGIN_MODULE_GLOBALS(swoole_mongo)
     zend_bool enable_library;
     zend_bool warn_blocking;
-ZEND_END_MODULE_GLOBALS(swmongo)
+ZEND_END_MODULE_GLOBALS(swoole_mongo)
 
-ZEND_EXTERN_MODULE_GLOBALS(swmongo)
-#define SWMG(v) ZEND_MODULE_GLOBALS_ACCESSOR(swmongo, v)
+ZEND_EXTERN_MODULE_GLOBALS(swoole_mongo)
+#define SWMG(v) ZEND_MODULE_GLOBALS_ACCESSOR(swoole_mongo, v)
 
 /* --------------------------------------------- SwooleMongo\Driver\Exception */
 extern zend_class_entry *swm_ce_Exception;                 /* interface */
@@ -369,4 +369,4 @@ void swm_zval_set_double_bits(zval *z, uint64_t bits);
     ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(name, 0, 0, type, 0) \
     ZEND_END_ARG_INFO()
 
-#endif /* PHP_SWMONGO_H */
+#endif /* PHP_SWOOLE_MONGO_H */

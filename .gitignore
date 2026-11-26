@@ -33,3 +33,5 @@ modules/
 run-tests.php
 *.dSYM/
 swm_library.h
+package.xml
+swoole_mongo-*.tgz

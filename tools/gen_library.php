@@ -18,7 +18,7 @@ foreach ($order as $file) {
     foreach (str_split($code, 2000) as $chunk) {
         $lit .= '    "' . addcslashes($chunk, "\0..\37\"\\?\177..\377") . "\"\n";
     }
-    $out .= "  {\"@swmongo/$file\",\n$lit    , " . strlen($code) . "},\n";
+    $out .= "  {\"@swoole-mongo/$file\",\n$lit    , " . strlen($code) . "},\n";
 }
 $out .= "};\n";
 file_put_contents("$root/swm_library.h", $out);

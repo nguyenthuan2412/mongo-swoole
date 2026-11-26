@@ -1,7 +1,7 @@
 <?php
 /**
  * End-to-end test suite (API mirrors ext-mongodb + mongodb/mongodb).
- *   php -d extension=modules/swmongo.so testsuite/run.php
+ *   php -d extension=modules/swoole_mongo.so testsuite/run.php
  * Env: SWM_RS_URI   (replica set, default mongodb://127.0.0.1:27119/?replicaSet=rs0)
  *      SWM_AUTH_URI (auth enabled standalone, default mongodb://root:secret@127.0.0.1:27118/?authSource=admin)
  *

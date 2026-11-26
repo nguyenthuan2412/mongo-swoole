@@ -5,7 +5,7 @@
  *
  * Compiled with -mgeneral-regs-only on arm64: no floating point here.
  */
-#include "php_swmongo.h"
+#include "php_swoole_mongo.h"
 
 zend_class_entry *swm_ce_Manager;
 zend_class_entry *swm_ce_Server;
@@ -2365,7 +2365,7 @@ PHP_METHOD(SwooleMongo_Driver_Manager, createClientEncryption)
         }
     }
 #else
-    swm_throw(swm_ce_RuntimeException, "Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt");
+    swm_throw(swm_ce_RuntimeException, "Client-side field level encryption was not compiled in; rebuild swoole-mongo with --with-swoole-mongo-mongocrypt");
 #endif
 }
 

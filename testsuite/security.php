@@ -70,7 +70,7 @@ Swoole\Coroutine\run(function () {
     });
 
     if (!$hasCrypt) {
-        echo "  - client-side encryption (skipped, swmongo built without libmongocrypt)\n";
+        echo "  - client-side encryption (skipped, swoole-mongo built without libmongocrypt)\n";
     } else {
         $kms = ['local' => ['key' => new Binary(random_bytes(96), Binary::TYPE_GENERIC)]];
         $plain = new Client($RS);

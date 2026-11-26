@@ -1,4 +1,4 @@
-# Linux build of swmongo with Swoole (and optional zstd/intl extensions),
+# Linux build of swoole-mongo with Swoole (and optional zstd/intl extensions),
 # Kerberos (GSSAPI) and libmongocrypt (CSFLE / Queryable Encryption).
 FROM php:8.3-cli
 
@@ -28,7 +28,7 @@ RUN arch="$(uname -m)" && mkdir -p /opt/crypt \
 
 COPY . /src
 WORKDIR /src
-RUN ./build.sh --with-swmongo-gssapi --with-swmongo-mongocrypt && make install && docker-php-ext-enable swmongo \
- && php -m | grep -E 'swoole|swmongo|zstd|intl' && php -r 'var_dump(class_exists("SwooleMongo\\Driver\\ClientEncryption"));'
+RUN ./build.sh --with-swoole-mongo-gssapi --with-swoole-mongo-mongocrypt && make install && docker-php-ext-enable swoole_mongo \
+ && php -m | grep -E 'swoole|swoole_mongo|zstd|intl' && php -r 'var_dump(class_exists("SwooleMongo\\Driver\\ClientEncryption"));'
 
-CMD ["php", "-r", "echo 'swmongo ', SWMONGO_VERSION, PHP_EOL;"]
+CMD ["php", "-r", "echo 'swoole-mongo ', SWOOLE_MONGO_VERSION, PHP_EOL;"]

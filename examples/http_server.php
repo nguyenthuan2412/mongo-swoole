@@ -1,10 +1,10 @@
 <?php
 /**
- * Swoole HTTP server using swmongo. One MongoClient per worker (create it in
+ * Swoole HTTP server using swoole-mongo. One MongoClient per worker (create it in
  * workerStart, never before the fork). Each request runs in its own coroutine;
  * MongoDB I/O yields so a worker serves many requests concurrently.
  *
- *   php -d extension=swmongo.so examples/http_server.php
+ *   php -d extension=swoole_mongo.so examples/http_server.php
  *   curl 'http://127.0.0.1:9501/users?name=ann'
  */
 use Swoole\Http\Server;

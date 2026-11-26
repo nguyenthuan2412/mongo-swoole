@@ -1,0 +1,33 @@
+{
+    "name": "nguyenthuan2412/swoole-mongo",
+    "type": "php-ext",
+    "description": "Non-blocking MongoDB driver for PHP and Swoole coroutines (ext-mongodb + mongodb/mongodb compatible API)",
+    "keywords": ["mongodb", "swoole", "coroutine", "async", "database", "driver", "extension"],
+    "license": "MIT",
+    "homepage": "https://github.com/nguyenthuan2412/mongo-swoole",
+    "require": {
+        "php": ">=8.1"
+    },
+    "suggest": {
+        "ext-swoole": "Coroutine (non-blocking) I/O",
+        "ext-intl": "SASLprep for SCRAM-SHA-256 passwords with non ASCII characters",
+        "ext-zstd": "zstd wire compression"
+    },
+    "php-ext": {
+        "extension-name": "swoole_mongo",
+        "priority": 80,
+        "support-zts": false,
+        "configure-options": [
+            {
+                "name": "with-swoole-mongo-gssapi",
+                "description": "Kerberos (GSSAPI) authentication, needs MIT krb5 (libkrb5-dev / brew krb5). Optional value: krb5 prefix",
+                "needs-value": false
+            },
+            {
+                "name": "with-swoole-mongo-mongocrypt",
+                "description": "Client-side field level encryption / Queryable Encryption, needs libmongocrypt >= 1.8 (found with pkg-config)",
+                "needs-value": false
+            }
+        ]
+    }
+}

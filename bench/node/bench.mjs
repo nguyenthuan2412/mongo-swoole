@@ -7,10 +7,15 @@ const CONC = +(process.env.BENCH_CONC || 100);
 const doc = (i) => ({ i, name: 'user' + i, email: `user${i}@example.com`, age: i % 90, active: i % 2 === 0,
   tags: ['a', 'b', 'c'], address: { city: 'Hanoi', zip: '100000', geo: [105.8, 21.0] }, score: i * 1.5, created: new Date() });
 
-const client = new MongoClient(uri, { maxPoolSize: CONC });
+// swoole-mongo does not validate UTF-8 while decoding either
+const client = new MongoClient(uri, { maxPoolSize: CONC, enableUtf8Validation: false });
 await client.connect();
 const col = client.db('bench').collection('node');
 await col.drop().catch(() => {});
+const warm = client.db('bench').collection('warmup_node');
+await warm.drop().catch(() => {});
+for (let i = 0, W = +(process.env.BENCH_WARMUP || 2000); i < W; i++) { await warm.insertOne(doc(i)); await warm.findOne({ i }); }
+await warm.drop();
 const results = [];
 
 async function bench(name, ops, fn) {

@@ -67,7 +67,7 @@ class UnsupportedException extends RuntimeException
 
     public static function clientEncryptionNotSupported(): self
     {
-        return new self('Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt');
+        return new self('Client-side field level encryption was not compiled in; rebuild swoole-mongo with --with-swoole-mongo-mongocrypt');
     }
 }
 

@@ -1,5 +1,5 @@
 <?php
-/** Same workload as bench/node/bench.mjs, using swmongo inside Swoole coroutines. Prints a JSON array. */
+/** Same workload as bench/node/bench.mjs, using swoole-mongo inside Swoole coroutines. Prints a JSON array. */
 use SwooleMongo\Client;
 use SwooleMongo\BSON\UTCDateTime;
 
@@ -12,9 +12,14 @@ $results = [];
 Swoole\Coroutine\run(function () use ($uri, $N, $CONC, &$results) {
     $doc = fn (int $i) => ['i' => $i, 'name' => 'user' . $i, 'email' => "user$i@example.com", 'age' => $i % 90, 'active' => $i % 2 === 0,
         'tags' => ['a', 'b', 'c'], 'address' => ['city' => 'Hanoi', 'zip' => '100000', 'geo' => [105.8, 21.0]], 'score' => $i * 1.5, 'created' => new UTCDateTime()];
-    $client = new Client($uri . "&maxPoolSize=$CONC");
+    // fastest representation: plain PHP arrays (like plain JS objects / org.bson.Document)
+    $client = new Client($uri . "&maxPoolSize=$CONC", [], ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]);
     $col = $client->selectCollection('bench', 'php');
     $col->drop();
+    $warm = $client->selectCollection('bench', 'warmup_php');
+    $warm->drop();
+    for ($i = 0, $W = (int) (getenv('BENCH_WARMUP') ?: 2000); $i < $W; $i++) { $warm->insertOne($doc($i)); $warm->findOne(['i' => $i]); }
+    $warm->drop();
     $bench = function (string $name, int $ops, callable $fn) use (&$results) {
         $lat = [];
         $t0 = hrtime(true);

@@ -9,7 +9,9 @@
  * (topology, pools) is only mutated between I/O calls; objects that must
  * survive a yield are reference counted.
  */
-#include "php_swmongo.h"
+#include "php_swoole_mongo.h"
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include "ext/standard/base64.h"
 #include "ext/standard/url.h"
 #include "ext/standard/php_mt_rand.h"
@@ -218,7 +220,7 @@ static void check_hooks(swm_client *c, zend_bool is_unix)
     if (Z_TYPE(r) == IS_LONG && !(Z_LVAL(r) & need)) {
         warned = 1;
         php_error_docref(NULL, E_WARNING,
-            "swmongo is running inside a Swoole coroutine but the runtime hook for this transport is disabled; "
+            "swoole-mongo is running inside a Swoole coroutine but the runtime hook for this transport is disabled; "
             "MongoDB I/O will block the whole worker. Call Swoole\\Runtime::enableCoroutine(SWOOLE_HOOK_ALL) "
             "or set 'hook_flags' => SWOOLE_HOOK_ALL");
     }
@@ -708,7 +710,7 @@ static int interpret_options(swm_client *c, zend_bool srv, swm_error *err)
     }
 #ifndef SWM_HAVE_GSSAPI
     if (c->auth_mechanism && zend_string_equals_literal_ci(c->auth_mechanism, "GSSAPI")) {
-        swm_error_set(err, SWM_ERR_ARG, 0, "GSSAPI (Kerberos) support was not compiled in; rebuild swmongo with --with-swmongo-gssapi");
+        swm_error_set(err, SWM_ERR_ARG, 0, "GSSAPI (Kerberos) support was not compiled in; rebuild swoole-mongo with --with-swoole-mongo-gssapi");
         return FAILURE;
     }
 #endif
@@ -1760,7 +1762,7 @@ static int aws_credentials(swm_client *c, zend_string **key, zend_string **secre
             ejwt = php_url_encode(ZSTR_VAL(jwt), ZSTR_LEN(jwt));
             erole = php_url_encode(role, strlen(role));
             url = zend_strpprintf(0, "https://sts.amazonaws.com/?Action=AssumeRoleWithWebIdentity&RoleSessionName=%s&RoleArn=%s&WebIdentityToken=%s&Version=2011-06-15",
-                                  sess && *sess ? sess : "swmongo", ZSTR_VAL(erole), ZSTR_VAL(ejwt));
+                                  sess && *sess ? sess : "swoole-mongo", ZSTR_VAL(erole), ZSTR_VAL(ejwt));
             resp = http_request("GET", ZSTR_VAL(url), "Accept: application/json\r\n", NULL, err);
             zend_string_release(url); zend_string_release(ejwt); zend_string_release(erole); zend_string_release(jwt);
             if (resp && json_decode_assoc(resp, &j) == SUCCESS) {
@@ -2245,7 +2247,7 @@ static void build_hello(swm_client *c, zval *cmd, zend_bool legacy, zend_bool ha
         array_init(&client);
         array_init(&driver);
         add_assoc_string(&driver, "name", SWM_DRIVER_NAME);
-        add_assoc_string(&driver, "version", PHP_SWMONGO_VERSION);
+        add_assoc_string(&driver, "version", PHP_SWOOLE_MONGO_VERSION);
         add_assoc_zval(&client, "driver", &driver);
         array_init(&os);
         add_assoc_string(&os, "type", PHP_OS_FAMILY);
@@ -2370,9 +2372,13 @@ static swm_conn *conn_open(swm_client *c, swm_server *s, zend_bool do_auth, zval
         tv.tv_usec = 0;
     }
     php_stream_set_option(stream, PHP_STREAM_OPTION_READ_TIMEOUT, 0, &tv);
-    {
-        int one = 1;
-        (void) one;
+    if (!s->is_unix) {
+        /* like the Node.js / Java drivers: no Nagle delay on the last segment of a message */
+        php_socket_t fd;
+        if (php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, (void **) &fd, 0) == SUCCESS && fd >= 0) {
+            int one = 1;
+            (void) setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *) &one, sizeof(one));
+        }
     }
 
     conn = ecalloc(1, sizeof(*conn));
@@ -3237,7 +3243,7 @@ swm_client *swm_client_create(zend_string *uri, zval *uri_options, zval *driver_
             c->crypt = swm_crypt_new(c, ae, 1, kvc, err);
             if (!c->crypt) { swm_client_release(c); return NULL; }
 #else
-            swm_error_set(err, SWM_ERR_ARG, 0, "Client-side field level encryption was not compiled in; rebuild swmongo with --with-swmongo-mongocrypt");
+            swm_error_set(err, SWM_ERR_ARG, 0, "Client-side field level encryption was not compiled in; rebuild swoole-mongo with --with-swoole-mongo-mongocrypt");
             swm_client_release(c);
             return NULL;
 #endif

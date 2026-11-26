@@ -1,0 +1,30 @@
+# On a version tag (v1.2.3): build the PECL package and attach it to a GitHub release.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  pecl-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: pecl
+      - name: Check the tag matches the extension version
+        run: |
+          v=$(sed -n 's/.*PHP_SWOOLE_MONGO_VERSION "\(.*\)".*/\1/p' php_swoole_mongo.h)
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $v"; exit 1; }
+      - name: Build package
+        run: php tools/package.php
+      - name: Test install from the package
+        run: |
+          sudo pecl install -f "$(ls swoole_mongo-*.tgz)" < /dev/null
+          php -d extension=swoole_mongo -r 'echo SWOOLE_MONGO_VERSION, PHP_EOL; var_dump(class_exists("SwooleMongo\\Client"));'
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" swoole_mongo-*.tgz --title "swoole-mongo $GITHUB_REF_NAME" --generate-notes

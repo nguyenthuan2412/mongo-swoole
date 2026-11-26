@@ -10,7 +10,7 @@
  *
  * Compiled with -mgeneral-regs-only on arm64 (no floating point).
  */
-#include "php_swmongo.h"
+#include "php_swoole_mongo.h"
 
 zend_class_entry *swm_ce_ClientEncryption;
 

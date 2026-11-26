@@ -1,10 +1,10 @@
 /*
- * swmongo module entry: INI, exception hierarchy, embedded PHP library.
+ * swoole-mongo module entry: INI, exception hierarchy, embedded PHP library.
  */
-#include "php_swmongo.h"
+#include "php_swoole_mongo.h"
 #include "swm_library.h"
 
-ZEND_DECLARE_MODULE_GLOBALS(swmongo)
+ZEND_DECLARE_MODULE_GLOBALS(swoole_mongo)
 
 zend_class_entry *swm_ce_Exception;
 zend_class_entry *swm_ce_RuntimeException;
@@ -22,8 +22,8 @@ zend_class_entry *swm_ce_BulkWriteException;
 zend_class_entry *swm_ce_EncryptionException;
 
 PHP_INI_BEGIN()
-    STD_PHP_INI_BOOLEAN("swmongo.enable_library", "1", PHP_INI_SYSTEM, OnUpdateBool, enable_library, zend_swmongo_globals, swmongo_globals)
-    STD_PHP_INI_BOOLEAN("swmongo.warn_blocking", "1", PHP_INI_ALL, OnUpdateBool, warn_blocking, zend_swmongo_globals, swmongo_globals)
+    STD_PHP_INI_BOOLEAN("swoole_mongo.enable_library", "1", PHP_INI_SYSTEM, OnUpdateBool, enable_library, zend_swoole_mongo_globals, swoole_mongo_globals)
+    STD_PHP_INI_BOOLEAN("swoole_mongo.warn_blocking", "1", PHP_INI_ALL, OnUpdateBool, warn_blocking, zend_swoole_mongo_globals, swoole_mongo_globals)
 PHP_INI_END()
 
 /* --------------------------------------------------------- exceptions */
@@ -120,27 +120,27 @@ static void exceptions_minit(void)
 }
 
 /* ------------------------------------------------------------ module */
-static PHP_GINIT_FUNCTION(swmongo)
+static PHP_GINIT_FUNCTION(swoole_mongo)
 {
-#if defined(COMPILE_DL_SWMONGO) && defined(ZTS)
+#if defined(COMPILE_DL_SWOOLE_MONGO) && defined(ZTS)
     ZEND_TSRMLS_CACHE_UPDATE();
 #endif
-    swmongo_globals->enable_library = 1;
-    swmongo_globals->warn_blocking = 1;
+    swoole_mongo_globals->enable_library = 1;
+    swoole_mongo_globals->warn_blocking = 1;
 }
 
-PHP_MINIT_FUNCTION(swmongo)
+PHP_MINIT_FUNCTION(swoole_mongo)
 {
     REGISTER_INI_ENTRIES();
     exceptions_minit();
     swm_bson_minit();
     swm_driver_minit();
     swm_crypt_minit();
-    REGISTER_STRING_CONSTANT("SWMONGO_VERSION", PHP_SWMONGO_VERSION, CONST_CS | CONST_PERSISTENT);
+    REGISTER_STRING_CONSTANT("SWOOLE_MONGO_VERSION", PHP_SWOOLE_MONGO_VERSION, CONST_CS | CONST_PERSISTENT);
     return SUCCESS;
 }
 
-PHP_MSHUTDOWN_FUNCTION(swmongo)
+PHP_MSHUTDOWN_FUNCTION(swoole_mongo)
 {
     UNREGISTER_INI_ENTRIES();
     return SUCCESS;
@@ -152,7 +152,7 @@ static void load_library(void)
     if (zend_hash_str_exists(EG(class_table), ZEND_STRL("swoolemongo\\client"))) return;
     for (size_t i = 0; i < sizeof(swm_library) / sizeof(swm_library[0]); i++) {
         if (zend_eval_stringl(swm_library[i].code, swm_library[i].len, NULL, swm_library[i].name) != SUCCESS) {
-            php_error_docref(NULL, E_WARNING, "swmongo: failed to load bundled library file %s", swm_library[i].name);
+            php_error_docref(NULL, E_WARNING, "swoole-mongo: failed to load bundled library file %s", swm_library[i].name);
             break;
         }
         if (EG(exception)) {
@@ -163,26 +163,26 @@ static void load_library(void)
     }
 }
 
-PHP_RINIT_FUNCTION(swmongo)
+PHP_RINIT_FUNCTION(swoole_mongo)
 {
-#if defined(COMPILE_DL_SWMONGO) && defined(ZTS)
+#if defined(COMPILE_DL_SWOOLE_MONGO) && defined(ZTS)
     ZEND_TSRMLS_CACHE_UPDATE();
 #endif
     if (SWMG(enable_library)) load_library();
     return SUCCESS;
 }
 
-PHP_RSHUTDOWN_FUNCTION(swmongo)
+PHP_RSHUTDOWN_FUNCTION(swoole_mongo)
 {
     swm_client_close_all();
     return SUCCESS;
 }
 
-PHP_MINFO_FUNCTION(swmongo)
+PHP_MINFO_FUNCTION(swoole_mongo)
 {
     php_info_print_table_start();
-    php_info_print_table_header(2, "swmongo support", "enabled");
-    php_info_print_table_row(2, "Version", PHP_SWMONGO_VERSION);
+    php_info_print_table_header(2, "swoole-mongo support", "enabled");
+    php_info_print_table_row(2, "Version", PHP_SWOOLE_MONGO_VERSION);
     php_info_print_table_row(2, "Wire protocol", "OP_MSG, OP_COMPRESSED (zlib)");
     php_info_print_table_row(2, "Authentication", "SCRAM-SHA-1, SCRAM-SHA-256, PLAIN, MONGODB-X509");
     php_info_print_table_row(2, "Bundled library", SWMG(enable_library) ? "enabled" : "disabled");
@@ -190,7 +190,7 @@ PHP_MINFO_FUNCTION(swmongo)
     DISPLAY_INI_ENTRIES();
 }
 
-static const zend_module_dep swmongo_deps[] = {
+static const zend_module_dep swoole_mongo_deps[] = {
     ZEND_MOD_REQUIRED("json")
     ZEND_MOD_REQUIRED("date")
     ZEND_MOD_REQUIRED("spl")
@@ -199,27 +199,27 @@ static const zend_module_dep swmongo_deps[] = {
     ZEND_MOD_END
 };
 
-zend_module_entry swmongo_module_entry = {
+zend_module_entry swoole_mongo_module_entry = {
     STANDARD_MODULE_HEADER_EX, NULL,
-    swmongo_deps,
-    "swmongo",
+    swoole_mongo_deps,
+    "swoole_mongo",
     NULL,
-    PHP_MINIT(swmongo),
-    PHP_MSHUTDOWN(swmongo),
-    PHP_RINIT(swmongo),
-    PHP_RSHUTDOWN(swmongo),
-    PHP_MINFO(swmongo),
-    PHP_SWMONGO_VERSION,
-    PHP_MODULE_GLOBALS(swmongo),
-    PHP_GINIT(swmongo),
+    PHP_MINIT(swoole_mongo),
+    PHP_MSHUTDOWN(swoole_mongo),
+    PHP_RINIT(swoole_mongo),
+    PHP_RSHUTDOWN(swoole_mongo),
+    PHP_MINFO(swoole_mongo),
+    PHP_SWOOLE_MONGO_VERSION,
+    PHP_MODULE_GLOBALS(swoole_mongo),
+    PHP_GINIT(swoole_mongo),
     NULL,
     NULL,
     STANDARD_MODULE_PROPERTIES_EX
 };
 
-#ifdef COMPILE_DL_SWMONGO
+#ifdef COMPILE_DL_SWOOLE_MONGO
 #ifdef ZTS
 ZEND_TSRMLS_CACHE_DEFINE()
 #endif
-ZEND_GET_MODULE(swmongo)
+ZEND_GET_MODULE(swoole_mongo)
 #endif
