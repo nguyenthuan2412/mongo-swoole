@@ -1,0 +1,84 @@
+# Full test environment: docker compose up --build --exit-code-from tests
+x-primary-check: &primary
+  interval: 2s
+  timeout: 10s
+  retries: 60
+
+services:
+  mongo-rs:
+    image: mongo:7
+    command: mongod --replSet rs0 --bind_ip_all --port 27017
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { quit(rs.status().myState === 1 ? 0 : 1) } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo-rs:27017'}]}); quit(1) }"]
+
+  mongo-rs8:
+    image: mongo:8
+    command: mongod --replSet rs8 --bind_ip_all --port 27017
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { quit(rs.status().myState === 1 ? 0 : 1) } catch (e) { rs.initiate({_id: 'rs8', members: [{_id: 0, host: 'mongo-rs8:27017'}]}); quit(1) }"]
+
+  mongo-auth:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: secret
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "-u", "root", "-p", "secret", "--quiet", "--eval", "quit(db.adminCommand({ping: 1}).ok ? 0 : 1)"]
+
+  # sharded cluster behind HAProxy (PROXY protocol) for loadBalanced=true
+  cfg:
+    image: mongo:7
+    command: mongod --configsvr --replSet cfg --port 27019 --bind_ip_all
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "--port", "27019", "--quiet", "--eval", "try { quit(rs.status().myState === 1 ? 0 : 1) } catch (e) { rs.initiate({_id: 'cfg', configsvr: true, members: [{_id: 0, host: 'cfg:27019'}]}); quit(1) }"]
+  shard:
+    image: mongo:7
+    command: mongod --shardsvr --replSet sh --port 27018 --bind_ip_all
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "--port", "27018", "--quiet", "--eval", "try { quit(rs.status().myState === 1 ? 0 : 1) } catch (e) { rs.initiate({_id: 'sh', members: [{_id: 0, host: 'shard:27018'}]}); quit(1) }"]
+  mongos:
+    image: mongo:7
+    command: mongos --configdb cfg/cfg:27019 --bind_ip_all --port 27017 --setParameter loadBalancerPort=27016
+    depends_on:
+      cfg: { condition: service_healthy }
+      shard: { condition: service_healthy }
+    healthcheck:
+      <<: *primary
+      test: ["CMD", "mongosh", "--quiet", "--eval", "const s = db.adminCommand({listShards: 1}).shards || []; if (s.length) quit(0); sh.addShard('sh/shard:27018'); quit(1)"]
+  lb:
+    image: haproxy:2.9-alpine
+    volumes: ["./docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro"]
+    depends_on:
+      mongos: { condition: service_healthy }
+
+  socks:
+    image: serjs/go-socks5-proxy
+    environment:
+      PROXY_USER: pu
+      PROXY_PASSWORD: pp
+
+  tests:
+    build: .
+    depends_on:
+      mongo-rs: { condition: service_healthy }
+      mongo-rs8: { condition: service_healthy }
+      mongo-auth: { condition: service_healthy }
+      lb: { condition: service_started }
+      socks: { condition: service_started }
+    environment:
+      SWM_RS_URI: mongodb://mongo-rs:27017/?replicaSet=rs0
+      SWM_AUTH_URI: mongodb://root:secret@mongo-auth:27017/?authSource=admin
+      SWM_RS8_URI: mongodb://mongo-rs8:27017/?replicaSet=rs8
+      SWM_LB_URI: mongodb://lb:27200/?loadBalanced=true
+      SWM_SOCKS_URI: mongodb://mongo-rs:27017/?directConnection=true&proxyHost=socks&proxyPort=1080&proxyUsername=pu&proxyPassword=pp
+    command: >
+      sh -c "php -v | head -1 && uname -m &&
+             php testsuite/run.php &&
+             php testsuite/features.php &&
+             php testsuite/leak.php &&
+             php testsuite/compression.php"
