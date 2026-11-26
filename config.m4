@@ -16,7 +16,10 @@ PHP_ARG_WITH([swoole-mongo-mongocrypt],
 if test "$PHP_SWOOLE_MONGO" != "no"; then
   dnl The PHP layer (library/*.php) is embedded into the .so through swm_library.h.
   dnl build.sh generates it; PIE / PECL builds run configure directly, so do it here too.
+  dnl ext_srcdir is only set by PHP_NEW_EXTENSION below; PECL / PIE build outside the source tree
   SWM_SRCDIR="$ext_srcdir"
+  test -z "$SWM_SRCDIR" && SWM_SRCDIR="$abs_srcdir"
+  test -z "$SWM_SRCDIR" && SWM_SRCDIR="$srcdir"
   test -z "$SWM_SRCDIR" && SWM_SRCDIR="."
   if test -f "$SWM_SRCDIR/tools/gen_library.php"; then
     SWM_PHP="$PHP_EXECUTABLE"

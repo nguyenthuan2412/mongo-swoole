@@ -20,3 +20,17 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  install:
+    name: Install with PECL and PIE (clean php:8.3-cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the PECL package
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q php-pear
+          php tools/package.php
+      - name: pecl install
+        run: docker build --target pecl -f docker/install-test/Dockerfile .
+      - name: pie install
+        run: docker build --target pie -f docker/install-test/Dockerfile .
